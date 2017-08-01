@@ -185,7 +185,7 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
     }
 
     @Override
-    public void flush(ChannelHandlerContext ctx) throws Http2Exception {
+    public void flush(ChannelHandlerContext ctx)  {
         try {
             // Trigger pending writes in the remote flow controller.
             encoder.flowController().writePendingBytes();
@@ -504,11 +504,15 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         // Trigger flush after read on the assumption that flush is cheap if there is nothing to write and that
         // for flow-control the read may release window that causes data to be written that can now be flushed.
         try {
-            // First call channelReadComplete(...) as this may produce more data that we want to flush
-            super.channelReadComplete(ctx);
+            // First call channelReadComplete0(...) as this may produce more data that we want to flush
+            channelReadComplete0(ctx);
         } finally {
             flush(ctx);
         }
+    }
+
+    void channelReadComplete0(ChannelHandlerContext ctx) throws Exception {
+        super.channelReadComplete(ctx);
     }
 
     /**
