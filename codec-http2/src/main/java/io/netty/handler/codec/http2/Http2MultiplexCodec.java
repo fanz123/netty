@@ -48,12 +48,10 @@ import java.net.SocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
 import java.util.Queue;
-import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 
 import static io.netty.handler.codec.http2.Http2CodecUtil.isOutboundStream;
 import static io.netty.handler.codec.http2.Http2CodecUtil.isStreamIdValid;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
-import static java.lang.Math.max;
 import static java.lang.Math.min;
 
 /**
@@ -111,10 +109,6 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
             registerDone(future);
         }
     };
-
-    @SuppressWarnings("rawtypes")
-    private static final AtomicLongFieldUpdater<DefaultHttp2StreamChannel> OUTBOUND_FLOW_CONTROL_WINDOW_UPDATER =
-            AtomicLongFieldUpdater.newUpdater(DefaultHttp2StreamChannel.class, "outboundFlowControlWindow");
 
     private static final ChannelMetadata METADATA = new ChannelMetadata(false, 16);
     private static final ClosedChannelException CLOSED_CHANNEL_EXCEPTION = ThrowableUtil.unknownStackTrace(
@@ -208,8 +202,6 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
             } else {
                 childChannel.unsafe().closeForcibly();
             }
-        } else {
-            childChannel.setWritable();
         }
     }
 
@@ -270,6 +262,15 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
             registerDone(future);
         } else {
             future.addListener(CHILD_CHANNEL_REGISTRATION_LISTENER);
+        }
+    }
+
+    @Override
+    final void onHttp2StreamWritabilityChanged(ChannelHandlerContext ctx, Http2FrameStream stream, boolean writable) {
+        DefaultHttp2StreamChannel childChannel = ((Http2MultiplexCodecStream) stream).channel;
+
+        if (childChannel != null)  {
+            childChannel.writabilityChanged(writable);
         }
     }
 
@@ -339,12 +340,6 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
         }
     }
 
-    @Override
-    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-        // TODO: Should we also notify all the Http2StreamChannel about this and so trigger a writability change ?
-        super.channelWritabilityChanged(ctx);
-    }
-
     /**
      * Notifies any child streams of the read completion.
      */
@@ -408,6 +403,7 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
         private final ChannelPromise closePromise;
 
         private volatile boolean registered;
+        private volatile boolean writable;
 
         private boolean closePending;
         private boolean readInProgress;
@@ -425,14 +421,6 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
 
         boolean fireChannelReadPending;
 
-        /**
-         * The flow control window of the remote side i.e. the number of bytes this channel is allowed to send to the
-         * remote peer. The window can become negative if a channel handler ignores the channel's writability. We are
-         * using a long so that we realistically don't have to worry about underflow.
-         */
-        @SuppressWarnings("UnusedDeclaration")
-        volatile long outboundFlowControlWindow;
-
         // Holds the reference to the next DefaultHttp2StreamChannel that should be processed in
         // channelReadComplete(...)
         DefaultHttp2StreamChannel next;
@@ -443,12 +431,12 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
             pipeline = new DefaultChannelPipeline(this) {
                 @Override
                 protected void incrementPendingOutboundBytes(long size) {
-                    unsafe.incrementOutboundFlowControlWindow(size, true);
+                    // Do thing for now
                 }
 
                 @Override
                 protected void decrementPendingOutboundBytes(long size) {
-                    unsafe.incrementOutboundFlowControlWindow(-size, true);
+                    // Do thing for now
                 }
             };
             closePromise = pipeline.newPromise();
@@ -494,9 +482,7 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
         @Override
         public boolean isWritable() {
             // TODO: Should we also take the parent channel into account ?
-            return isStreamIdValid(stream.id())
-                    // So that the channel doesn't become active before the initial flow control window has been set.
-                    && outboundFlowControlWindow > 0;
+            return isStreamIdValid(stream.id()) && writable;
         }
 
         @Override
@@ -536,13 +522,14 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
 
         @Override
         public long bytesBeforeUnwritable() {
-            return max(0, outboundFlowControlWindow);
+            // TODO: Do a proper impl
+            return config().getWriteBufferHighWaterMark();
         }
 
         @Override
         public long bytesBeforeWritable() {
-            long window = outboundFlowControlWindow;
-            return window < 0 ? -window : 0;
+            // TODO: Do a proper impl
+            return 0;
         }
 
         @Override
@@ -708,9 +695,13 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
             return parent().toString() + "(HTTP/2 - " + stream + ')';
         }
 
-        void setWritable() {
+        void writabilityChanged(boolean writable) {
             assert eventLoop().inEventLoop();
-            unsafe.setWritable();
+            if (writable != this.writable && isActive()) {
+                // Only notify if we received a state change.
+                this.writable = writable;
+                pipeline().fireChannelWritabilityChanged();
+            }
         }
 
         private Queue<Object> inboundBuffer() {
@@ -766,34 +757,7 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
             @SuppressWarnings("deprecation")
             private RecvByteBufAllocator.Handle recvHandle;
             private boolean flush;
-            private boolean writable;
             private boolean inClose;
-
-            void setWritable() {
-                assert !isWritable();
-                incrementOutboundFlowControlWindow(initialOutboundStreamWindow, false);
-                writable = true;
-                assert isWritable();
-                pipeline().fireChannelWritabilityChanged();
-            }
-
-            void incrementOutboundFlowControlWindow(long bytes, boolean mayChangeWritability) {
-                if (bytes == 0) {
-                    return;
-                }
-                long window = OUTBOUND_FLOW_CONTROL_WINDOW_UPDATER.addAndGet(DefaultHttp2StreamChannel.this, bytes);
-                if (mayChangeWritability) {
-                    if (!writable) {
-                        if (window > 0) {
-                            writable = true;
-                            pipeline().fireChannelWritabilityChanged();
-                        }
-                    } else if (window <= 0) {
-                        writable = false;
-                        pipeline().fireChannelWritabilityChanged();
-                    }
-                }
-            }
 
             @Override
             public void connect(final SocketAddress remoteAddress,
@@ -954,10 +918,6 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
                     numBytesToBeConsumed = ((Http2DataFrame) frame).flowControlledBytes();
                     allocHandle.lastBytesRead(numBytesToBeConsumed);
                 } else {
-                    if (frame instanceof Http2WindowUpdateFrame) {
-                        Http2WindowUpdateFrame windowUpdate = (Http2WindowUpdateFrame) frame;
-                        incrementOutboundFlowControlWindow(windowUpdate.windowSizeIncrement(), true);
-                    }
                     allocHandle.lastBytesRead(ARBITRARY_MESSAGE_SIZE);
                 }
                 allocHandle.incMessagesRead(1);
@@ -986,11 +946,6 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
                     return;
                 }
 
-                final int bytes = FlowControlledFrameSizeEstimator.HANDLE_INSTANCE.size(msg);
-
-                incrementOutboundFlowControlWindow(-bytes, true);
-
-                // TODO(buchgr): Should we also the change the writability if END_STREAM is set?
                 try {
                     if (msg instanceof Http2StreamFrame) {
                         Http2StreamFrame frame = validateStreamFrame((Http2StreamFrame) msg).stream(stream());
@@ -1022,12 +977,12 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
 
                     ChannelFuture future = write0(msg);
                     if (future.isDone()) {
-                        writeComplete(future, promise, bytes);
+                        writeComplete(future, promise);
                     } else {
                         future.addListener(new ChannelFutureListener() {
                             @Override
                             public void operationComplete(ChannelFuture future) throws Exception {
-                                writeComplete(future, promise, bytes);
+                                writeComplete(future, promise);
                             }
                         });
                     }
@@ -1042,25 +997,18 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
                 Throwable cause = future.cause();
                 if (cause == null) {
                     promise.setSuccess();
-                    setWritable();
                 } else {
                     promise.setFailure(cause);
                     closeForcibly();
                 }
             }
 
-            private void writeComplete(ChannelFuture future, ChannelPromise promise, long bytes) {
+            private void writeComplete(ChannelFuture future, ChannelPromise promise) {
                 Throwable cause = future.cause();
                 if (cause == null) {
                     promise.setSuccess();
                 } else {
                     promise.setFailure(cause);
-                    if (bytes > 0 && isActive()) {
-                        /*
-                         * Return the flow control window of the failed data frame.
-                         */
-                        incrementOutboundFlowControlWindow(bytes, true);
-                    }
                 }
             }
 
@@ -1123,12 +1071,12 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
 
             @Override
             public int getWriteBufferHighWaterMark() {
-                return max(0, (int) min(Integer.MAX_VALUE, outboundFlowControlWindow));
+                return min(parent().config().getWriteBufferHighWaterMark(), initialOutboundStreamWindow);
             }
 
             @Override
             public int getWriteBufferLowWaterMark() {
-                return getWriteBufferHighWaterMark();
+                return min(parent().config().getWriteBufferLowWaterMark(), initialOutboundStreamWindow);
             }
 
             @Override

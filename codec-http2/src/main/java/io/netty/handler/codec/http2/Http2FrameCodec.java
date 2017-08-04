@@ -169,6 +169,7 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
 
         decoder.frameListener(new FrameListener());
         connection().addListener(new ConnectionListener());
+        connection().remote().flowController().listener(new Http2RemoteFlowControllerListener());
         streamKey = connection().newKey();
         initialLocalConnectionWindow = initialSettings.initialWindowSize();
         gracefulShutdownTimeoutMillis(gracefulShutdownTimeoutMillis);
@@ -180,6 +181,7 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
 
         decoder().frameListener(new FrameListener());
         connection().addListener(new ConnectionListener());
+        connection().remote().flowController().listener(new Http2RemoteFlowControllerListener());
         streamKey = connection().newKey();
         initialLocalConnectionWindow = initialSettings.initialWindowSize();
     }
@@ -546,12 +548,17 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
         ctx.fireUserEventTriggered(evt);
     }
 
+    void onHttp2StreamWritabilityChanged(ChannelHandlerContext ctx, Http2FrameStream stream,
+                                         @SuppressWarnings("unused") boolean writable) {
+        ctx.fireUserEventTriggered(Http2FrameStreamEvent.writabilityChanged(stream));
+    }
+
     void onHttp2StreamActive(ChannelHandlerContext ctx, Http2FrameStream stream) {
-        ctx.fireUserEventTriggered(Http2FrameStreamEvent.active(stream));
+        ctx.fireUserEventTriggered(Http2FrameStreamEvent.stateChanged(stream));
     }
 
     void onHttp2StreamClosed(ChannelHandlerContext ctx, Http2FrameStream stream) {
-        ctx.fireUserEventTriggered(Http2FrameStreamEvent.closed(stream));
+        ctx.fireUserEventTriggered(Http2FrameStreamEvent.stateChanged(stream));
     }
 
     void onHttp2Frame(ChannelHandlerContext ctx, Http2Frame frame) {
@@ -560,6 +567,18 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
 
     void onHttp2FrameStreamException(ChannelHandlerContext ctx, Http2FrameStreamException cause) {
         ctx.fireExceptionCaught(cause);
+    }
+
+    private final class Http2RemoteFlowControllerListener implements Http2RemoteFlowController.Listener {
+        @Override
+        public void writabilityChanged(Http2Stream stream) {
+            Http2FrameStream frameStream = stream.getProperty(streamKey);
+            if (frameStream == null) {
+                return;
+            }
+            onHttp2StreamWritabilityChanged(
+                    ctx, frameStream, connection().remote().flowController().isWritable(stream));
+        }
     }
 
     /**

@@ -43,8 +43,6 @@ import org.mockito.ArgumentCaptor;
 
 import java.net.InetSocketAddress;
 import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -345,7 +343,8 @@ public class Http2FrameCodecTest {
         frameCodec.onError(http2HandlerCtx, streamEx);
 
         Http2FrameStreamEvent event = inboundHandler.readInboundMessageOrUserEvent();
-        assertEquals(Http2FrameStreamEvent.State.ACTIVE, event.state());
+        assertEquals(Http2FrameStreamEvent.Type.State, event.type());
+        assertEquals(State.OPEN, event.stream().state());
         Http2HeadersFrame headersFrame = inboundHandler.readInboundMessageOrUserEvent();
         assertNotNull(headersFrame);
 
