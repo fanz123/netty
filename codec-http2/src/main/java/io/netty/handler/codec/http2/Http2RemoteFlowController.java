@@ -67,11 +67,11 @@ public interface Http2RemoteFlowController extends Http2FlowController {
     /**
      * Determine if the {@code stream} has bytes remaining for use in the flow control window.
      * <p>
-     * Note that this only takes into account HTTP/2 flow control. It does <strong>not</strong> take into account
-     * the underlying {@link io.netty.channel.Channel#isWritable()}.
+     * Note that it will take into account channel writability, and so will return {@code false} if
+     * {@link io.netty.channel.Channel#isWritable()} returns {@code false} as well.
      * @param stream The stream to test.
-     * @return {@code true} if if the {@code stream} has bytes remaining for use in the flow control window.
-     * {@code false} otherwise.
+     * @return {@code true} if the {@code stream} has bytes remaining for use in the flow control window and the
+     * channel is writable, {@code false} otherwise.
      */
     boolean isWritable(Http2Stream stream);
 
