@@ -1075,7 +1075,7 @@ public final class PlatformDependent {
     }
 
     @SuppressWarnings("ResultOfMethodCallIgnored")
-    private static File toDirectory(String path) {
+    static File toDirectory(String path) {
         if (path == null) {
             return null;
         }
