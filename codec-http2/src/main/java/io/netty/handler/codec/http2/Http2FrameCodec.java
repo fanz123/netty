@@ -489,6 +489,14 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
     }
 
     private final class FrameListener extends Http2FrameAdapter {
+
+        @Override
+        public void onUnknownFrame(
+                ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags, ByteBuf payload) {
+            onHttp2Frame(ctx, new DefaultHttp2UnkownFrame(frameType, flags, payload.retain())
+                    .stream(requireStream(streamId)));
+        }
+
         @Override
         public void onSettingsRead(ChannelHandlerContext ctx, Http2Settings settings) {
             onHttp2Frame(ctx, new DefaultHttp2SettingsFrame(settings));

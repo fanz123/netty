@@ -127,7 +127,6 @@ public class Http2FrameCodecTest {
         assertNotNull(settingsFrame);
     }
 
-
     @Test
     public void stateChanges() throws Exception {
         frameListener.onHeadersRead(http2HandlerCtx, 1, request, 31, true);
@@ -159,7 +158,6 @@ public class Http2FrameCodecTest {
 
         assertTrue(channel.isActive());
     }
-
 
     @Test
     public void headerRequestHeaderResponse() throws Exception {
