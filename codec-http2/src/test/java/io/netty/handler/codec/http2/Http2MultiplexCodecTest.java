@@ -60,9 +60,8 @@ public class Http2MultiplexCodecTest {
             .authority(new AsciiString("example.org")).path(new AsciiString("/foo"));
 
     private TestableHttp2MultiplexCodec codec;
-    private Http2FrameStream inboundStream;
-
-    private Http2FrameStream outboundStream;
+    private TestableHttp2MultiplexCodec.Stream inboundStream;
+    private TestableHttp2MultiplexCodec.Stream outboundStream;
 
     private static final int initialRemoteStreamWindow = 1024;
 
@@ -80,8 +79,10 @@ public class Http2MultiplexCodecTest {
         Http2Settings settings = new Http2Settings().initialWindowSize(initialRemoteStreamWindow);
         codec.onHttp2Frame(new DefaultHttp2SettingsFrame(settings));
 
-        inboundStream = codec.newStream().id(3);
-        outboundStream = codec.newStream().id(2);
+        inboundStream = codec.newStream();
+        inboundStream.id = 3;
+        outboundStream = codec.newStream();
+        outboundStream.id = 2;
     }
 
     @After
@@ -108,7 +109,8 @@ public class Http2MultiplexCodecTest {
         Http2DataFrame dataFrame2 = new DefaultHttp2DataFrame(bb("world")).stream(inboundStream);
 
         assertFalse(inboundHandler.isChannelActive());
-        codec.onHttp2StreamActive(inboundStream);
+        inboundStream.state = Http2Stream.State.OPEN;
+        codec.onHttp2StreamStateChanged(inboundStream);
         codec.onHttp2Frame(headersFrame);
         assertTrue(inboundHandler.isChannelActive());
         codec.onHttp2Frame(dataFrame1);
@@ -126,9 +128,13 @@ public class Http2MultiplexCodecTest {
     @Test
     public void framesShouldBeMultiplexed() {
 
-        Http2FrameStream stream3 = codec.newStream().id(3);
-        Http2FrameStream stream5 = codec.newStream().id(5);
-        Http2FrameStream stream11 = codec.newStream().id(11);
+        TestableHttp2MultiplexCodec.Stream stream3 = codec.newStream();
+        stream3.id = 3;
+        TestableHttp2MultiplexCodec.Stream stream5 = codec.newStream();
+        stream5.id = 5;
+
+        TestableHttp2MultiplexCodec.Stream stream11 = codec.newStream();
+        stream11.id = 11;
 
         LastInboundHandler inboundHandler3 = streamActiveAndWriteHeaders(stream3);
         LastInboundHandler inboundHandler5 = streamActiveAndWriteHeaders(stream5);
@@ -248,7 +254,8 @@ public class Http2MultiplexCodecTest {
         codec.onChannelReadComplete();
 
         // This will be called by the frame codec.
-        codec.onHttp2StreamClosed(inboundStream);
+        inboundStream.state = Http2Stream.State.CLOSED;
+        codec.onHttp2StreamStateChanged(inboundStream);
         parentChannel.runPendingTasks();
 
         assertFalse(inboundHandler.isChannelActive());
@@ -447,8 +454,8 @@ public class Http2MultiplexCodecTest {
         LastInboundHandler inboundHandler = new LastInboundHandler();
         childChannelInitializer.handler = inboundHandler;
         assertFalse(inboundHandler.isChannelActive());
-
-        codec.onHttp2StreamActive(stream);
+        ((TestableHttp2MultiplexCodec.Stream) stream).state = Http2Stream.State.OPEN;
+        codec.onHttp2StreamStateChanged(stream);
         codec.onHttp2Frame(new DefaultHttp2HeadersFrame(request).stream(stream));
         codec.onChannelReadComplete();
         assertTrue(inboundHandler.isChannelActive());
@@ -482,7 +489,7 @@ public class Http2MultiplexCodecTest {
         assertNotNull(headersFrame);
         assertNotNull(headersFrame.stream());
         assertFalse(Http2CodecUtil.isStreamIdValid(headersFrame.stream().id()));
-        ((Http2MultiplexCodec.Http2MultiplexCodecStream) headersFrame.stream()).id(outboundStream.id());
+        ((TestableHttp2MultiplexCodec.Stream) headersFrame.stream()).id = outboundStream.id();
 
         // Now read it and complete the write promise.
         assertSame(headersFrame, parentChannel.readOutbound());
@@ -508,12 +515,8 @@ public class Http2MultiplexCodecTest {
             onChannelReadComplete(ctx);
         }
 
-        void onHttp2StreamActive(Http2FrameStream stream) {
-            onHttp2StreamActive(ctx, stream);
-        }
-
-        void onHttp2StreamClosed(Http2FrameStream stream) {
-            onHttp2StreamClosed(ctx, stream);
+        void onHttp2StreamStateChanged(Http2FrameStream stream) {
+            onHttp2StreamStateChanged(ctx, stream);
         }
 
         void onHttp2FrameStreamException(Http2FrameStreamException cause) {
@@ -537,6 +540,26 @@ public class Http2MultiplexCodecTest {
         @Override
         void flush0(ChannelHandlerContext ctx) {
             // Do nothing
+        }
+
+        @Override
+        Stream newStream() {
+            return new Stream();
+        }
+
+        final class Stream extends Http2MultiplexCodecStream {
+            Http2Stream.State state = Http2Stream.State.IDLE;
+            int id = -1;
+
+            @Override
+            public int id() {
+                return id;
+            }
+
+            @Override
+            public Http2Stream.State state() {
+                return state;
+            }
         }
     }
 

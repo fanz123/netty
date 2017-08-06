@@ -227,8 +227,8 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
     }
 
     @Override
-    final Http2MultiplexCodecStream newStream() {
-        return new Http2MultiplexCodecStream(connection());
+    Http2MultiplexCodecStream newStream() {
+        return new Http2MultiplexCodecStream();
     }
 
     @Override
@@ -247,22 +247,28 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
     }
 
     @Override
-    final void onHttp2StreamClosed(ChannelHandlerContext ctx, Http2FrameStream stream) {
-        DefaultHttp2StreamChannel childChannel = ((Http2MultiplexCodecStream) stream).channel;
-        if (childChannel != null) {
-            childChannel.streamClosed();
+    final void onHttp2StreamStateChanged(ChannelHandlerContext ctx, Http2FrameStream stream) {
+        switch (stream.state()) {
+            case OPEN:
+                DefaultHttp2StreamChannel childChannel = new DefaultHttp2StreamChannel(stream);
+                ChannelFuture future = ctx.channel().eventLoop().register(childChannel);
+                if (future.isDone()) {
+                    registerDone(future);
+                } else {
+                    future.addListener(CHILD_CHANNEL_REGISTRATION_LISTENER);
+                }
+                break;
+            case CLOSED:
+                DefaultHttp2StreamChannel channel = ((Http2MultiplexCodecStream) stream).channel;
+                if (channel != null) {
+                    channel.streamClosed();
+                }
+                break;
+            default:
+                // ignore for now
+                break;
         }
-    }
 
-    @Override
-    final void onHttp2StreamActive(ChannelHandlerContext ctx, Http2FrameStream stream) {
-        DefaultHttp2StreamChannel childChannel = new DefaultHttp2StreamChannel(stream);
-        ChannelFuture future = ctx.channel().eventLoop().register(childChannel);
-        if (future.isDone()) {
-            registerDone(future);
-        } else {
-            future.addListener(CHILD_CHANNEL_REGISTRATION_LISTENER);
-        }
     }
 
     @Override
@@ -385,10 +391,7 @@ public class Http2MultiplexCodec extends Http2FrameCodec {
     }
 
     // Allow to extend for testing
-    static final class Http2MultiplexCodecStream extends DefaultHttp2FrameStream {
-        public Http2MultiplexCodecStream(Http2Connection connection) {
-            super(connection);
-        }
+    static class Http2MultiplexCodecStream extends DefaultHttp2FrameStream {
 
         DefaultHttp2StreamChannel channel;
     }

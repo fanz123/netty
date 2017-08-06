@@ -127,6 +127,40 @@ public class Http2FrameCodecTest {
         assertNotNull(settingsFrame);
     }
 
+
+    @Test
+    public void stateChanges() throws Exception {
+        frameListener.onHeadersRead(http2HandlerCtx, 1, request, 31, true);
+
+        Http2Stream stream = frameCodec.connection().stream(1);
+        assertNotNull(stream);
+        assertEquals(State.HALF_CLOSED_REMOTE, stream.state());
+
+        Http2FrameStreamEvent event = inboundHandler.readInboundMessageOrUserEvent();
+        assertEquals(State.HALF_CLOSED_REMOTE, event.stream().state());
+
+        Http2StreamFrame inboundFrame = inboundHandler.readInbound();
+        Http2FrameStream stream2 = inboundFrame.stream();
+        assertNotNull(stream2);
+        assertEquals(1, stream2.id());
+        assertEquals(inboundFrame, new DefaultHttp2HeadersFrame(request, true, 31).stream(stream2));
+        assertNull(inboundHandler.readInbound());
+
+        inboundHandler.writeOutbound(new DefaultHttp2HeadersFrame(response, true, 27).stream(stream2));
+        verify(frameWriter).writeHeaders(
+                eq(http2HandlerCtx), eq(1), eq(response), anyInt(), anyShort(), anyBoolean(),
+                eq(27), eq(true), anyChannelPromise());
+        verify(frameWriter, never()).writeRstStream(
+                any(ChannelHandlerContext.class), anyInt(), anyLong(), anyChannelPromise());
+
+        assertEquals(State.CLOSED, stream.state());
+        event = inboundHandler.readInboundMessageOrUserEvent();
+        assertEquals(State.CLOSED, event.stream().state());
+
+        assertTrue(channel.isActive());
+    }
+
+
     @Test
     public void headerRequestHeaderResponse() throws Exception {
         frameListener.onHeadersRead(http2HandlerCtx, 1, request, 31, true);
@@ -484,6 +518,7 @@ public class Http2FrameCodecTest {
         channel.writeAndFlush(new DefaultHttp2HeadersFrame(new DefaultHttp2Headers()).stream(stream2), promise2);
 
         assertTrue(isStreamIdValid(stream1.id()));
+        channel.runPendingTasks();
         assertTrue(isStreamIdValid(stream2.id()));
 
         assertTrue(promise1.syncUninterruptibly().isSuccess());

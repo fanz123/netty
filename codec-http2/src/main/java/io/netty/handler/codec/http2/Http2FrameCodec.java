@@ -190,9 +190,7 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
      * Creates a new outbound/local stream.
      */
     DefaultHttp2FrameStream newStream() {
-        assert ctx.executor().inEventLoop();
-
-        return new DefaultHttp2FrameStream(connection());
+        return new DefaultHttp2FrameStream();
     }
 
     /**
@@ -384,10 +382,9 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
                 promise.setFailure(new Http2NoMoreStreamIdsException());
                 return;
             }
+            stream.id = streamId;
+
             numBufferedStreams++;
-            // Set the stream id before completing the promise, as any listener added by a user will be executed
-            // before the below listener, and so the stream identifier is accessible in a user's listener.
-            stream.id(streamId);
             // Ensure that the listener gets executed before any listeners a user might have attached.
             // TODO(buchgr): Once Http2Stream2 and Http2Stream are merged this is no longer necessary.
             writePromise = ctx.newPromise();
@@ -397,14 +394,16 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
                     numBufferedStreams--;
 
                     Throwable cause = future.cause();
-                    Http2Stream connectionStream;
-                    if (cause == null && (connectionStream = connection.stream(streamId)) != null) {
-                        connectionStream.setProperty(streamKey, stream);
-                    } else {
-                        onHttp2StreamClosed(ctx, stream);
-                    }
                     if (cause == null) {
-                        promise.setSuccess();
+
+                        Http2Stream connectionStream  = connection.stream(streamId);
+                        if (connectionStream != null) {
+                            stream.attach(streamKey, connectionStream);
+                            promise.setSuccess();
+                        } else {
+                            promise.setFailure(new Http2Exception.StreamException(
+                                    streamId, Http2Error.STREAM_CLOSED, "Stream not exists"));
+                        }
                     } else {
                         promise.setFailure(cause);
                     }
@@ -424,16 +423,23 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
                 return;
             }
 
-            DefaultHttp2FrameStream stream2 = newStream().id(stream.id());
-            stream.setProperty(streamKey, stream2);
-            onHttp2StreamActive(ctx, stream2);
+            DefaultHttp2FrameStream stream2 = newStream().attach(streamKey, stream);
+            onHttp2StreamStateChanged(ctx, stream2);
         }
 
         @Override
         public void onStreamClosed(Http2Stream stream) {
             DefaultHttp2FrameStream stream2 = stream.getProperty(streamKey);
             if (stream2 != null) {
-                onHttp2StreamClosed(ctx, stream2);
+                onHttp2StreamStateChanged(ctx, stream2);
+            }
+        }
+
+        @Override
+        public void onStreamHalfClosed(Http2Stream stream) {
+            DefaultHttp2FrameStream stream2 = stream.getProperty(streamKey);
+            if (stream2 != null) {
+                onHttp2StreamStateChanged(ctx, stream2);
             }
         }
 
@@ -553,14 +559,9 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
         ctx.fireUserEventTriggered(Http2FrameStreamEvent.writabilityChanged(stream));
     }
 
-    void onHttp2StreamActive(ChannelHandlerContext ctx, Http2FrameStream stream) {
+    void onHttp2StreamStateChanged(ChannelHandlerContext ctx, Http2FrameStream stream) {
         ctx.fireUserEventTriggered(Http2FrameStreamEvent.stateChanged(stream));
     }
-
-    void onHttp2StreamClosed(ChannelHandlerContext ctx, Http2FrameStream stream) {
-        ctx.fireUserEventTriggered(Http2FrameStreamEvent.stateChanged(stream));
-    }
-
     void onHttp2Frame(ChannelHandlerContext ctx, Http2Frame frame) {
         ctx.fireChannelRead(frame);
     }
@@ -587,35 +588,31 @@ public class Http2FrameCodec extends Http2ConnectionHandler  {
     // TODO(buchgr): Merge Http2FrameStream and Http2Stream.
     static class DefaultHttp2FrameStream implements Http2FrameStream {
 
-        private final Http2Connection connection;
         private volatile int id = -1;
+        private volatile Http2Stream stream;
 
-        DefaultHttp2FrameStream(Http2Connection connection) {
-            this.connection = connection;
-        }
-
-        DefaultHttp2FrameStream id(int id) {
-            assert isStreamIdValid(id);
-            this.id = id;
+        DefaultHttp2FrameStream attach(PropertyKey streamKey, Http2Stream stream) {
+            assert id == -1 || stream.id() == id;
+            this.stream = stream;
+            stream.setProperty(streamKey, this);
             return this;
         }
 
         @Override
         public int id() {
-            return id;
+            Http2Stream stream = this.stream;
+            return stream == null ? id : stream.id();
         }
 
         @Override
         public State state() {
-            Http2Stream stream0 = connection.stream(id);
-            return stream0 == null
-                    ? State.IDLE
-                    : stream0.state();
+            Http2Stream stream = this.stream;
+            return stream == null ? State.IDLE : stream.state();
         }
 
         @Override
         public String toString() {
-            return String.valueOf(id);
+            return String.valueOf(id());
         }
     }
 }
